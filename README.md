@@ -48,10 +48,11 @@ customer would.
 
 Overrides: `WEB_PORT`, `CORE_PORT`, `CORE_STARTER_CREDITS`.
 
-`check` extracts each `run:` block from the workflows of `.profile`, `connectors`,
-`core` and `web` and runs `bash -n` on it. A typo inside a YAML literal block is
-invisible to a YAML parser but fails on GitHub with an opaque "exit code 2" —
-this catches it locally before pushing.
+`check` extracts each `run:` block from this repo's workflow and the workflows of
+`.profile`, `connectors`, `core` and `web`, and runs `bash -n` on it (missing
+component repos are skipped). A typo inside a YAML literal block is invisible to
+a YAML parser but fails on GitHub with an opaque "exit code 2" — this catches it
+locally before pushing.
 
 ## Test the full PayAsYouGo flow
 
@@ -81,13 +82,15 @@ upstream responses are never charged. No subscription, no monthly reset.
 
 ## Repositories
 
+- [`infra`](https://github.com/apieverything/infra) — one-command deployment (this repository)
 - [`core`](https://github.com/apieverything/core) — unified gateway (keys, credits, vouchers)
 - [`connectors`](https://github.com/apieverything/connectors) — Instagram, LinkedIn, TikTok
 - [`web`](https://github.com/apieverything/web) — public site and dashboard
 - [`.github`](https://github.com/apieverything/.github) — organization profile
 
-Each repository has its own CI running the offline test suites. This infra repo
-contains only deployment files; it is local-only until a remote is configured.
+Each repository has its own offline CI. This repo holds only deployment files;
+its CI checks the shell syntax, the Compose file and that no admin token was
+committed.
 
 ## License
 

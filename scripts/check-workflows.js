@@ -17,10 +17,11 @@ const cp = require("node:child_process");
 
 const ROOT = path.resolve(__dirname, "..");
 const WORKFLOWS = [
-  ".profile/.github/workflows/ci.yml",
-  "connectors/.github/workflows/ci.yml",
-  "core/.github/workflows/ci.yml",
-  "web/.github/workflows/ci.yml",
+  { rel: ".github/workflows/ci.yml", repo: "." },
+  { rel: ".profile/.github/workflows/ci.yml", repo: ".profile" },
+  { rel: "connectors/.github/workflows/ci.yml", repo: "connectors" },
+  { rel: "core/.github/workflows/ci.yml", repo: "core" },
+  { rel: "web/.github/workflows/ci.yml", repo: "web" },
 ];
 
 const errors = [];
@@ -38,9 +39,16 @@ const lint = (rel, lineNo, script) => {
   }
 };
 
-for (const rel of WORKFLOWS) {
+for (const wf of WORKFLOWS) {
+  const rel = wf.rel;
   const full = path.join(ROOT, rel);
   if (!fs.existsSync(full)) {
+    // A component repo that simply isn't cloned locally is fine; a workflow
+    // missing from a repo that IS present is a regression.
+    if (!fs.existsSync(path.join(ROOT, wf.repo))) {
+      console.log(`  - ${rel} (repo not cloned, skipped)`);
+      continue;
+    }
     errors.push(`${rel}: workflow file missing`);
     continue;
   }
