@@ -44,8 +44,14 @@ customer would.
 | `./deploy.sh voucher` | Issue a new 500-credit prepaid voucher |
 | `./deploy.sh logs` | Follow all logs |
 | `./deploy.sh urls` | Print endpoints |
+| `./deploy.sh check` | Lint every `run:` shell block of the 4 CI workflows (no network) |
 
 Overrides: `WEB_PORT`, `CORE_PORT`, `CORE_STARTER_CREDITS`.
+
+`check` extracts each `run:` block from the workflows of `.profile`, `connectors`,
+`core` and `web` and runs `bash -n` on it. A typo inside a YAML literal block is
+invisible to a YAML parser but fails on GitHub with an opaque "exit code 2" —
+this catches it locally before pushing.
 
 ## Test the full PayAsYouGo flow
 

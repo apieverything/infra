@@ -10,6 +10,7 @@
 #   ./deploy.sh voucher      # issue a prepaid voucher (stdout = code only)
 #   ./deploy.sh logs         # follow all logs
 #   ./deploy.sh urls         # print endpoints
+#   ./deploy.sh check        # lint every CI workflow shell block
 #
 # Overrides: WEB_PORT, CORE_PORT, CORE_STARTER_CREDITS.
 #
@@ -226,6 +227,12 @@ cmd_voucher() {
 
 cmd_logs() { need docker; "${COMPOSE[@]}" logs -f --tail=80; }
 
+cmd_check() {
+  need node
+  need bash
+  node "$ROOT/scripts/check-workflows.js"
+}
+
 case "${1:-up}" in
   up)      cmd_up ;;
   down)    cmd_down ;;
@@ -234,6 +241,7 @@ case "${1:-up}" in
   voucher) cmd_voucher ;;
   logs)    cmd_logs ;;
   urls)    print_urls ;;
-  -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) die "unknown command '$1'. Try: up | down | status | key | voucher | logs | urls" ;;
+  check)   cmd_check ;;
+  -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) die "unknown command '$1'. Try: up | down | status | key | voucher | logs | urls | check" ;;
 esac
