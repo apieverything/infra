@@ -7,9 +7,13 @@ production as possible: three connectors, the unified gateway and the site.
 ./deploy.sh
 ```
 
-That's it. Then open <http://localhost:8180/app.html>, create your 16-digit
-key, save it, and use it against <http://localhost:9100> exactly like a hosted
-customer would.
+That's it. Then open <http://localhost:8180/app.html>, create your account,
+**save the 16-digit unlock code**, unlock it to create an **API key**, and call
+<http://localhost:9100> with that key exactly like a hosted customer would.
+
+The unlock code (`X-Unlock-Code`) only opens the account. It is **never** an API
+key: an `ae_…` API key (`X-API-Key`) is what your code uses, and it can be
+created, reset or revoked without touching the account or its credits.
 
 ## What `./deploy.sh` does
 
@@ -40,11 +44,17 @@ customer would.
 | `./deploy.sh` / `up` | Build and start everything |
 | `./deploy.sh down` | Stop (keeps the key database volume) |
 | `./deploy.sh status` | Health of gateway, site and each connector |
-| `./deploy.sh key` | Create a 16-digit key, shown once |
+| `./deploy.sh key` | Create an account + its first API key (stdout = API key, stderr = unlock code) |
+| `./deploy.sh apikey <code>` | Create another API key for that account |
+| `./deploy.sh keys <code>` | List the account's API keys (sanitized, no raw keys) |
+| `./deploy.sh rotate <code> [keyId]` | Reset one API key, or all of them |
+| `./deploy.sh revoke <code> <keyId>` | Revoke one API key |
 | `./deploy.sh voucher` | Issue a new 500-credit prepaid voucher |
 | `./deploy.sh logs` | Follow all logs |
 | `./deploy.sh urls` | Print endpoints |
-| `./deploy.sh check` | Lint every `run:` shell block of the 4 CI workflows (no network) |
+| `./deploy.sh check` | Lint every `run:` shell block of the 5 CI workflows (no network) |
+
+`<code>` is always the **16-digit unlock code**, never an API key.
 
 Overrides: `WEB_PORT`, `CORE_PORT`, `CORE_STARTER_CREDITS`.
 
@@ -58,32 +68,54 @@ locally before pushing.
 
 ```bash
 ./deploy.sh up
-KEY=$(./deploy.sh key)                    # 16 digits — stdout is the key only
+
+# stdout = API key (ae_…), stderr = your 16-digit unlock code — SAVE IT
+KEY=$(./deploy.sh key)
+CODE=<the 16-digit unlock code printed above>
+
 curl "http://localhost:9100/v1/usage" -H "X-API-Key: $KEY"
 curl "http://localhost:9100/v1/instagram/kametolol/posts?limit=2" -H "X-API-Key: $KEY"
 # → 200 with X-Credits-Cost: 3 and X-Credits-Remaining
 
-./deploy.sh voucher                        # paste the code in the dashboard
+# The unlock code is explicitly refused as an API key:
+curl "http://localhost:9100/v1/usage" -H "X-API-Key: $CODE"
+# → 401 UNLOCK_CODE_NOT_API_KEY
+
+# Create, list, rotate and revoke API keys (credits never move):
+./deploy.sh keys "$CODE"
+NEW=$(./deploy.sh apikey "$CODE")
+./deploy.sh rotate "$CODE"
+./deploy.sh revoke "$CODE" <keyId from ./deploy.sh keys>
+
+./deploy.sh voucher              # paste the code in the dashboard → Add quota
 ```
 
-Or use the browser: open the dashboard, click **Create my key**, save it, then
-**Add credits** with the voucher printed by `./deploy.sh up`. Failed or empty
-upstream responses are never charged. No subscription, no monthly reset.
+Or use the browser: open the dashboard, click **Create my account**, save the
+unlock code, unlock it to reveal your first API key, then manage keys in the
+**API keys** panel and **Add credits** with the voucher printed by
+`./deploy.sh up`. Failed or empty upstream responses are never charged. No
+subscription, no monthly reset.
 
 ## Security notes
 
 - `.deploy/` is gitignored: it holds the local admin token and generated config.
   The public `web/assets/config.js` keeps `GATEWAY_URL` empty so the live site
   stays honest ("not launched") until a real hosted gateway is deployed.
+- The 16-digit unlock code opens the account; only `ae_…` API keys are accepted
+  for API calls. The gateway stores SHA-256 hashes of both, never the raw
+  values. A leaked API key is rotated in one command; a leaked unlock code is
+  the account itself — keep it out of scripts, CI secrets and screenshots.
 - Connector proxy credentials from your local `.env` are **not** used by the
   stack; proxies are explicitly disabled. Set them via environment overrides if
   you want to test that path.
-- The core key database lives in a named Docker volume; `down` keeps it.
+- The core key database lives in a named Docker volume; `down` keeps it. A v1
+  database is migrated in place on first read (old 16-digit keys become unlock
+  codes, credits preserved, no API key minted automatically).
 
 ## Repositories
 
 - [`infra`](https://github.com/apieverything/infra) — one-command deployment (this repository)
-- [`core`](https://github.com/apieverything/core) — unified gateway (keys, credits, vouchers)
+- [`core`](https://github.com/apieverything/core) — unified gateway (unlock code, rotatable API keys, credits, vouchers)
 - [`connectors`](https://github.com/apieverything/connectors) — Instagram, LinkedIn, TikTok
 - [`web`](https://github.com/apieverything/web) — public site and dashboard
 - [`.github`](https://github.com/apieverything/.github) — organization profile

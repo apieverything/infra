@@ -2,20 +2,26 @@
 # ============================================================================
 # API Everything — one-command local deployment.
 #
-#   ./deploy.sh              # build + start everything (default: up)
-#   ./deploy.sh up           # same
-#   ./deploy.sh down         # stop and remove containers (keeps the key DB)
-#   ./deploy.sh status       # health of gateway, connectors and site
-#   ./deploy.sh key          # create a 16-digit key (shown once, stdout = key only)
-#   ./deploy.sh voucher      # issue a prepaid voucher (stdout = code only)
-#   ./deploy.sh logs         # follow all logs
-#   ./deploy.sh urls         # print endpoints
-#   ./deploy.sh check        # lint every CI workflow shell block
+#   ./deploy.sh                 # build + start everything (default: up)
+#   ./deploy.sh up              # same
+#   ./deploy.sh down            # stop and remove containers (keeps the key DB)
+#   ./deploy.sh status          # health of gateway, connectors and site
+#   ./deploy.sh key             # create an account + its first API key
+#                               #   stdout = API key only, stderr = 16-digit unlock code
+#   ./deploy.sh apikey <code>   # create another API key (stdout = key only)
+#   ./deploy.sh keys <code>     # list the account's API keys (sanitized)
+#   ./deploy.sh rotate <code> [keyId]   # reset one key, or all when keyId is omitted
+#   ./deploy.sh revoke <code> <keyId>   # revoke one key
+#   ./deploy.sh voucher         # issue a prepaid voucher (stdout = code only)
+#   ./deploy.sh logs            # follow all logs
+#   ./deploy.sh urls            # print endpoints
+#   ./deploy.sh check           # lint every CI workflow shell block
 #
 # Overrides: WEB_PORT, CORE_PORT, CORE_STARTER_CREDITS.
 #
 # The stack mirrors production: only the gateway and the site are exposed.
-# Clients reach connectors through the gateway with their 16-digit key.
+# Clients reach connectors through the gateway with an ae_… API key; the
+# 16-digit unlock code only opens the account (X-Unlock-Code).
 # ============================================================================
 set -euo pipefail
 
@@ -81,6 +87,7 @@ CORE_PORT=$CORE_PORT
 CORE_ADMIN_TOKEN=$token
 CORE_STARTER_CREDITS=$CORE_STARTER_CREDITS
 CORE_SIGNUP_PER_HOUR=50
+CORE_MAX_API_KEYS=20
 EOF
     chmod 600 "$STATE/.env"
     ok "generated .deploy/.env (random admin token)"
@@ -115,20 +122,34 @@ wait_healthy() {
   return 1
 }
 
-api_post() {
-  local path="$1" body="$2" auth="${3:-}"
+# api_call METHOD PATH BODY [HeaderName HeaderValue ...]
+api_call() {
+  local method="$1" path="$2" body="$3"
+  shift 3
   local headers=(-H "Content-Type: application/json")
-  [[ -n "$auth" ]] && headers+=(-H "X-Admin-Token: $auth")
-  curl -fsS --max-time 10 "${headers[@]}" -d "$body" "$GATEWAY$path" 2>/dev/null || true
+  while [[ $# -ge 2 ]]; do headers+=(-H "$1: $2"); shift 2; done
+  if [[ -n "$body" ]]; then
+    curl -fsS --max-time 10 "${headers[@]}" -X "$method" -d "$body" "$GATEWAY$path" 2>/dev/null || true
+  else
+    curl -fsS --max-time 10 "${headers[@]}" -X "$method" "$GATEWAY$path" 2>/dev/null || true
+  fi
 }
 
 json_field() {
   node -e '
     let s = "";
     process.stdin.on("data", d => s += d).on("end", () => {
-      try { console.log(JSON.parse(s)[process.argv[1]] || ""); } catch { console.log(""); }
+      try { const v = JSON.parse(s)[process.argv[1]]; console.log(v === undefined || v === null ? "" : v); } catch { console.log(""); }
     });
   ' "$1"
+}
+
+clean_unlock() { printf '%s' "${1:-}" | tr -cd '0-9' | cut -c1-16; }
+require_unlock() {
+  local code
+  code="$(clean_unlock "${1:-}")"
+  [[ ${#code} -eq 16 ]] || die "a 16-digit unlock code is required (the one shown by ./deploy.sh key)."
+  printf '%s' "$code"
 }
 
 print_urls() {
@@ -140,14 +161,20 @@ print_urls() {
   printf '    %-14s %s\n' "API status" "$GATEWAY/v1/status"
   printf '    %-14s %s\n' "OpenAPI" "$GATEWAY/openapi.yaml"
   printf '\n  %sTry it like production:%s\n\n' "$DIM" "$RST"
-  printf '    %s\n' "# 1. open $SITE/app.html -> Create my key -> SAVE IT"
-  printf '    %s\n' "# 2. or from the CLI:"
+  printf '    %s\n' "# 1. open $SITE/app.html -> Create my account -> SAVE the 16-digit unlock code"
+  printf '    %s\n' "#    unlock it -> create an API key -> use that key in X-API-Key"
+  printf '    %s\n' "# 2. or from the CLI (stdout = API key, stderr = unlock code):"
   printf '    %s\n' 'KEY=$(./deploy.sh key)'
   printf '    %s\n' "curl \"$GATEWAY/v1/instagram/kametolol/posts?limit=2\" -H \"X-API-Key: \$KEY\""
   printf '    %s\n' "curl \"$GATEWAY/v1/usage\" -H \"X-API-Key: \$KEY\""
+  printf '    %s\n' "# 3. manage keys with the 16-digit unlock code (never send it as X-API-Key):"
+  printf '    %s\n' 'CODE=<your 16-digit unlock code>'
+  printf '    %s\n' './deploy.sh keys "$CODE"'
+  printf '    %s\n' './deploy.sh apikey "$CODE"'
+  printf '    %s\n' './deploy.sh rotate "$CODE"'
   printf '\n  %sAdmin token:%s %s\n' "$DIM" "$RST" "$(admin_token)"
   printf '  %sNo subscription. No monthly reset. Failed requests are never charged.\n' "$DIM"
-  printf '  %sConnectors are internal-only - exactly like production.%s\n\n' "$DIM" "$RST"
+  printf '  %sUnlock code opens the account; ae_… API keys call the APIs. Connectors are internal-only.%s\n\n' "$DIM" "$RST"
 }
 
 cmd_up() {
@@ -170,7 +197,7 @@ cmd_up() {
   fi
 
   local code
-  code="$(api_post /v1/vouchers '{"credits":500}' "$(admin_token)" | json_field code)"
+  code="$(api_call POST /v1/vouchers '{"credits":500}' X-Admin-Token "$(admin_token)" | json_field code)"
   if [[ -n "$code" ]]; then
     printf '\n  %sTest voucher:%s %s\n' "$GREEN" "$RST" "$code"
     info "paste it in the dashboard -> Add quota (+500 credits)"
@@ -207,19 +234,66 @@ cmd_status() {
   printf '\n'
 }
 
-# Scriptable: stdout contains ONLY the value. Human messages go to stderr.
+# stdout contains ONLY the value. Human messages go to stderr.
 cmd_key() {
-  local result key
-  result="$(api_post /v1/signup '{}')"
-  key="$(json_field key <<<"$result")"
-  [[ -n "$key" ]] || die "signup failed - is the stack up? (./deploy.sh up)"
-  printf '  %sSave this key - shown once, cannot be recovered.%s\n' "$YELLOW" "$RST" >&2
-  printf '%s\n' "$key"
+  local result unlock_code api_key
+  result="$(api_call POST /v1/signup '{}')"
+  unlock_code="$(json_field unlockCode <<<"$result")"
+  [[ -n "$unlock_code" ]] || die "signup failed - is the stack up? (./deploy.sh up)"
+  result="$(api_call POST /v1/keys '{"name":"cli"}' X-Unlock-Code "$unlock_code")"
+  api_key="$(json_field apiKey <<<"$result")"
+  [[ -n "$api_key" ]] || die "could not create the first API key - is the stack up?"
+  printf '  %s16-digit UNLOCK CODE (SAVE IT - opens your account, NOT an API key):%s %s\n' "$YELLOW" "$RST" "$unlock_code" >&2
+  printf '  %sThe API key printed on stdout is what you put in X-API-Key. Reset it anytime.%s\n' "$DIM" "$RST" >&2
+  printf '%s\n' "$api_key"
+}
+
+cmd_apikey() {
+  local code result api_key
+  code="$(require_unlock "${1:-}")"
+  result="$(api_call POST /v1/keys '{"name":"cli"}' X-Unlock-Code "$code")"
+  api_key="$(json_field apiKey <<<"$result")"
+  [[ -n "$api_key" ]] || die "could not create an API key - wrong unlock code or stack down?"
+  printf '%s\n' "$api_key"
+}
+
+cmd_keys() {
+  local code out
+  code="$(require_unlock "${1:-}")"
+  out="$(api_call GET /v1/keys '' X-Unlock-Code "$code")"
+  [[ -n "$out" ]] || die "could not list keys - wrong unlock code or stack down?"
+  printf '%s\n' "$out"
+}
+
+cmd_rotate() {
+  local code key_id path result api_key
+  code="$(require_unlock "${1:-}")"
+  key_id="${2:-}"
+  if [[ -n "$key_id" ]]; then
+    [[ "$key_id" =~ ^[a-f0-9]{64}$ ]] || die "keyId must be the 64-char hash shown by ./deploy.sh keys"
+    path="/v1/keys/$key_id/reset"
+  else
+    path="/v1/keys/reset"
+  fi
+  result="$(api_call POST "$path" '{}' X-Unlock-Code "$code")"
+  api_key="$(json_field apiKey <<<"$result")"
+  [[ -n "$api_key" ]] || die "could not reset the key - wrong unlock code or unknown keyId?"
+  printf '%s\n' "$api_key"
+}
+
+cmd_revoke() {
+  local code key_id result
+  code="$(require_unlock "${1:-}")"
+  key_id="${2:-}"
+  [[ "$key_id" =~ ^[a-f0-9]{64}$ ]] || die "keyId must be the 64-char hash shown by ./deploy.sh keys"
+  result="$(api_call DELETE "/v1/keys/$key_id" '' X-Unlock-Code "$code")"
+  [[ -n "$result" ]] || die "could not revoke the key - wrong unlock code or unknown keyId?"
+  printf '%s\n' "$result"
 }
 
 cmd_voucher() {
   local result code
-  result="$(api_post /v1/vouchers '{"credits":500}' "$(admin_token)")"
+  result="$(api_call POST /v1/vouchers '{"credits":500}' X-Admin-Token "$(admin_token)")"
   code="$(json_field code <<<"$result")"
   [[ -n "$code" ]] || die "could not issue a voucher - is the stack up?"
   printf '%s\n' "$code"
@@ -238,10 +312,14 @@ case "${1:-up}" in
   down)    cmd_down ;;
   status)  cmd_status ;;
   key)     cmd_key ;;
+  apikey)  cmd_apikey "${2:-}" ;;
+  keys)    cmd_keys "${2:-}" ;;
+  rotate)  cmd_rotate "${2:-}" "${3:-}" ;;
+  revoke)  cmd_revoke "${2:-}" "${3:-}" ;;
   voucher) cmd_voucher ;;
   logs)    cmd_logs ;;
   urls)    print_urls ;;
   check)   cmd_check ;;
-  -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) die "unknown command '$1'. Try: up | down | status | key | voucher | logs | urls | check" ;;
+  -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
+  *) die "unknown command '$1'. Try: up | down | status | key | apikey | keys | rotate | revoke | voucher | logs | urls | check" ;;
 esac
