@@ -1,7 +1,7 @@
 # API Everything — infrastructure
 
 One command to run the **whole** API Everything stack locally, as close to
-production as possible: three connectors, the unified gateway and the site.
+production as possible: four connectors, the unified gateway and the site.
 
 ```bash
 ./deploy.sh
@@ -21,11 +21,12 @@ created, reset or revoked without touching the account or its credits.
    `apieverything/web` if they are not already present next to this file.
 2. Generates `.deploy/.env` with a **random admin token** (kept across runs) and
    `.deploy/config.js` pointing the dashboard at the local gateway.
-3. `docker compose up -d --build` for five services:
+3. `docker compose up -d --build` for six services:
 
    | Service | Network | Exposed |
    | --- | --- | --- |
    | `instagram` | internal `ae` | no |
+   | `youtube` | internal `ae` | no |
    | `linkedin` | internal `ae` | no |
    | `tiktok` | internal `ae` | no |
    | `core` | internal `ae` | `localhost:9100` |
@@ -33,8 +34,10 @@ created, reset or revoked without touching the account or its credits.
 
    Only the gateway and the site are published to the host — clients never talk
    to a connector directly, which is exactly the production topology.
-4. Waits for health, verifies the gateway sees all three connectors, and issues
-   a **ready-to-use voucher** so "Add quota" can be tested immediately.
+4. Waits for health, verifies the gateway sees all four connectors, enables
+   shared RAM caching (`X-Cache: HIT|MISS|COALESCED`) and local PayAsYouGo
+   sandbox checkout (`CORE_PAYMENT_SANDBOX=1`), and issues a **ready-to-use
+   voucher** so "Add quota" can be tested immediately.
 5. Prints the URLs, the admin token and copy-paste `curl` examples.
 
 ## Commands
@@ -50,6 +53,7 @@ created, reset or revoked without touching the account or its credits.
 | `./deploy.sh rotate <code> [keyId]` | Reset one API key, or all of them |
 | `./deploy.sh revoke <code> <keyId>` | Revoke one API key |
 | `./deploy.sh voucher` | Issue a new 500-credit prepaid voucher |
+| `./deploy.sh checkout [packId]` | Simulate a PayAsYouGo crypto invoice settlement → voucher (`pack_1k`, `pack_5k`, `pack_20k`) |
 | `./deploy.sh logs` | Follow all logs |
 | `./deploy.sh urls` | Print endpoints |
 | `./deploy.sh check` | Lint every `run:` shell block of the 5 CI workflows (no network) |
@@ -115,9 +119,9 @@ subscription, no monthly reset.
 ## Repositories
 
 - [`infra`](https://github.com/apieverything/infra) — one-command deployment (this repository)
-- [`core`](https://github.com/apieverything/core) — unified gateway (unlock code, rotatable API keys, credits, vouchers)
-- [`connectors`](https://github.com/apieverything/connectors) — Instagram, LinkedIn, TikTok
-- [`web`](https://github.com/apieverything/web) — public site and dashboard
+- [`core`](https://github.com/apieverything/core) — unified gateway (unlock code, rotatable API keys, RAM cache, vouchers, payment bridge)
+- [`connectors`](https://github.com/apieverything/connectors) — Instagram, YouTube, LinkedIn, TikTok
+- [`web`](https://github.com/apieverything/web) — public site, live API playground and PayAsYouGo dashboard
 - [`.github`](https://github.com/apieverything/.github) — organization profile
 
 Each repository has its own offline CI. This repo holds only deployment files;

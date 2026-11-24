@@ -13,6 +13,7 @@
 #   ./deploy.sh rotate <code> [keyId]   # reset one key, or all when keyId is omitted
 #   ./deploy.sh revoke <code> <keyId>   # revoke one key
 #   ./deploy.sh voucher         # issue a prepaid voucher (stdout = code only)
+#   ./deploy.sh checkout [pack] # test PayAsYouGo sandbox checkout -> voucher (default: pack_1k)
 #   ./deploy.sh logs            # follow all logs
 #   ./deploy.sh urls            # print endpoints
 #   ./deploy.sh check           # lint every CI workflow shell block
@@ -88,9 +89,13 @@ CORE_ADMIN_TOKEN=$token
 CORE_STARTER_CREDITS=$CORE_STARTER_CREDITS
 CORE_SIGNUP_PER_HOUR=50
 CORE_MAX_API_KEYS=20
+CORE_CACHE_ENABLED=1
+CORE_PAYMENT_SANDBOX=1
 EOF
     chmod 600 "$STATE/.env"
     ok "generated .deploy/.env (random admin token)"
+  elif ! grep -q '^CORE_PAYMENT_SANDBOX=' "$STATE/.env"; then
+    printf 'CORE_CACHE_ENABLED=1\nCORE_PAYMENT_SANDBOX=1\n' >> "$STATE/.env"
   fi
 
   # Public dashboard config for this local stack. The repository keeps
@@ -103,9 +108,10 @@ window.AE_CONFIG = {
   STARTER_CREDITS: $CORE_STARTER_CREDITS,
   COSTS: [
     ["Instagram / TikTok posts", 3],
+    ["YouTube videos / search / transcript", 2],
     ["LinkedIn aggregate signals", 2],
     ["LinkedIn people (blocked)", 5],
-    ["Profile / job / company metadata", 1],
+    ["Profile / job / company / video metadata", 1],
   ],
 };
 EOF
@@ -160,12 +166,14 @@ print_urls() {
   printf '    %-14s %s\n' "Health" "$GATEWAY/health"
   printf '    %-14s %s\n' "API status" "$GATEWAY/v1/status"
   printf '    %-14s %s\n' "OpenAPI" "$GATEWAY/openapi.yaml"
+  printf '    %-14s %s\n' "Merged spec" "$GATEWAY/v1/openapi.json"
   printf '\n  %sTry it like production:%s\n\n' "$DIM" "$RST"
   printf '    %s\n' "# 1. open $SITE/app.html -> Create my account -> SAVE the 16-digit unlock code"
-  printf '    %s\n' "#    unlock it -> create an API key -> use that key in X-API-Key"
+  printf '    %s\n' "#    unlock it -> create an API key -> run live calls in the Playground or top up via Sandbox Packs"
   printf '    %s\n' "# 2. or from the CLI (stdout = API key, stderr = unlock code):"
   printf '    %s\n' 'KEY=$(./deploy.sh key)'
   printf '    %s\n' "curl \"$GATEWAY/v1/instagram/kametolol/posts?limit=2\" -H \"X-API-Key: \$KEY\""
+  printf '    %s\n' "curl \"$GATEWAY/v1/youtube/@mkbhd/posts?limit=2\" -H \"X-API-Key: \$KEY\""
   printf '    %s\n' "curl \"$GATEWAY/v1/usage\" -H \"X-API-Key: \$KEY\""
   printf '    %s\n' "# 3. manage keys with the 16-digit unlock code (never send it as X-API-Key):"
   printf '    %s\n' 'CODE=<your 16-digit unlock code>'
@@ -299,6 +307,18 @@ cmd_voucher() {
   printf '%s\n' "$code"
 }
 
+cmd_checkout() {
+  local pack_id="${1:-pack_1k}" inv invoice_id settled code
+  inv="$(api_call POST /v1/payments/checkout "{\"packId\":\"$pack_id\"}")"
+  invoice_id="$(json_field invoiceId <<<"$inv")"
+  [[ -n "$invoice_id" ]] || die "checkout failed (is CORE_PAYMENT_SANDBOX=1 and stack up?)"
+  settled="$(api_call POST "/v1/payments/sandbox/$invoice_id/settle" '{}')"
+  code="$(json_field voucherCode <<<"$settled")"
+  [[ -n "$code" ]] || die "sandbox settlement failed for $invoice_id"
+  printf '  %sSandbox invoice settled:%s %s -> one-time voucher printed on stdout\n' "$GREEN" "$RST" "$invoice_id" >&2
+  printf '%s\n' "$code"
+}
+
 cmd_logs() { need docker; "${COMPOSE[@]}" logs -f --tail=80; }
 
 cmd_check() {
@@ -308,18 +328,19 @@ cmd_check() {
 }
 
 case "${1:-up}" in
-  up)      cmd_up ;;
-  down)    cmd_down ;;
-  status)  cmd_status ;;
-  key)     cmd_key ;;
-  apikey)  cmd_apikey "${2:-}" ;;
-  keys)    cmd_keys "${2:-}" ;;
-  rotate)  cmd_rotate "${2:-}" "${3:-}" ;;
-  revoke)  cmd_revoke "${2:-}" "${3:-}" ;;
-  voucher) cmd_voucher ;;
-  logs)    cmd_logs ;;
-  urls)    print_urls ;;
-  check)   cmd_check ;;
+  up)       cmd_up ;;
+  down)     cmd_down ;;
+  status)   cmd_status ;;
+  key)      cmd_key ;;
+  apikey)   cmd_apikey "${2:-}" ;;
+  keys)     cmd_keys "${2:-}" ;;
+  rotate)   cmd_rotate "${2:-}" "${3:-}" ;;
+  revoke)   cmd_revoke "${2:-}" "${3:-}" ;;
+  voucher)  cmd_voucher ;;
+  checkout) cmd_checkout "${2:-pack_1k}" ;;
+  logs)     cmd_logs ;;
+  urls)     print_urls ;;
+  check)    cmd_check ;;
   -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
-  *) die "unknown command '$1'. Try: up | down | status | key | apikey | keys | rotate | revoke | voucher | logs | urls | check" ;;
+  *) die "unknown command '$1'. Try: up | down | status | key | apikey | keys | rotate | revoke | voucher | checkout | logs | urls | check" ;;
 esac
